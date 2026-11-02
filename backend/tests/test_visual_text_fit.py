@@ -15,6 +15,7 @@ from app.services.audit import audit_deck
 from app.services.export import export_pptx
 from app.services.layout import build_scene
 from pptx.oxml.ns import qn
+from app.main import get_template
 from test_workflow import client, register
 
 
@@ -40,19 +41,51 @@ def test_qa_diagrams_and_icon_cards_fit_without_losing_text(case, variant):
         assert not [issue for issue in issues if issue.code == 'overflow'], issues
 
 
-def test_unfittable_generated_labels_do_not_publish_a_project(client):
-    register(client)
-    slide = Slide(title='Схема с избыточным содержанием', kind='diagram',
-                  bullets=['Очень длинная подпись узла ' * 80 for _ in range(6)])
+def generate(client, slides, title='Схемы'):
     response = client.post('/api/generate', json={
-        'template_id': 'tech', 'content': DeckContent(title='Не публиковать переполнение', slides=[slide]).model_dump(),
+        'template_id': 'tech', 'content': DeckContent(title=title, slides=slides).model_dump(),
     })
     assert response.status_code == 202, response.text
     job = client.get('/api/jobs/' + response.json()['job_id']).json()
-    assert job['state'] == 'failed', job
-    assert 'не помещается' in job['error']
-    assert not job['project_id']
-    assert client.get('/api/projects').json() == []
+    assert job['state'] == 'complete', job
+    return client.get('/api/projects/' + job['project_id']).json()
+
+
+def overflow_count(client, project):
+    return sum(issue['code'] == 'overflow'
+               for variant in 'abc'
+               for issue in client.get(f'/api/projects/{project["id"]}/audit?variant={variant}').json()['issues'])
+
+
+def test_unfittable_generated_labels_publish_with_audit_warning(client):
+    register(client)
+    bullets = ['Очень длинная подпись узла ' * 80 for _ in range(6)]
+    project = generate(client, [Slide(title='Схема с избыточным содержанием', kind='diagram', bullets=bullets)])
+    assert project['content']['slides'][0]['bullets'] == bullets
+    assert project['provenance']['text_fit']['overflow_slides'] == [1]
+    assert overflow_count(client, project) > 0
+
+
+def test_overflowing_diagram_becomes_a_list_when_that_fits_better(client):
+    register(client)
+    label = ('команда собирает требования проверяет гипотезы с пользователями и согласует план '
+             'запуска продукта на рынок вместе с партнёрами и инвесторами')
+    slide = Slide(title='Схема процесса', kind='diagram', bullets=[label] * 6)
+    template = get_template('tech')
+    before = sum(issue.code == 'overflow' for variant in 'abc'
+                 for issue in audit_deck(DeckContent(title='QA', slides=[slide]), template, variant, ''))
+    assert before > 0
+    project = generate(client, [slide])
+    saved = project['content']['slides'][0]
+    assert saved['kind'] == 'text' and saved['bullets'] == [label] * 6
+    assert project['provenance']['text_fit']['repaired_slides'] == [1]
+    assert overflow_count(client, project) < before
+
+
+def test_list_without_intro_starts_on_the_first_line():
+    scene = build_scene(Slide(title='Пункты', kind='text', bullets=['Первый', 'Второй']), {'ratio': 16 / 9}, 'a', 0)
+    body = next(obj for obj in scene['objects'] if obj['id'] == 'body')
+    assert body['text'] == '• Первый\n• Второй'
 
 
 def test_fitted_qa_visuals_publish_successfully(client):

@@ -251,7 +251,8 @@ def build_scene(slide: Slide, metadata: dict, variant: str, index: int) -> dict:
         rect('title-underline',title_box['x'],height*.55,min(160,title_box['w']),8,accent)
     title_color=theme['text'] if 'contrast_title' in slide.fixed or contrast(accent,theme['background'])<3 else accent
     text('title',slide.title,title_box,title_size,title_color,True)
-    content=slide.body+ ('\n'+'\n'.join('• '+b for b in slide.bullets) if slide.bullets else '')
+    # Without an intro paragraph the list starts on the first line instead of after a blank one.
+    content='\n'.join(part for part in (slide.body,*('• '+b for b in slide.bullets)) if part)
     if slide.kind in {'diagram','icons'}:
         intro_height=0
         if slide.body.strip():

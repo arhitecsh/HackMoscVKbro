@@ -41,7 +41,7 @@ def recipe():
             'outline_budget_seconds': settings.operation_timeout, 'assembly_budget_seconds': ASSEMBLY_BUDGET_SECONDS,
             'native_exports': ['text', 'chart', 'table', 'shape', 'connector', 'picture']}
 
-def manifest(template, content, source, audit_counts, duration, jid, timings=None):
+def manifest(template, content, source, audit_counts, duration, jid, timings=None, text_fit=None):
     clean_model = settings.model
     return {'effective_style': {'brand_style_id': content.brand_style_id, 'prefer_template': content.brand_prefer_template,
              'metadata': {k:template['metadata'][k] for k in ('accent','background','text_color','font','heading_font','body_font','font_assets','heading_pt','body_pt','slide_margin','grid_gap','chart_palette','chart_grid','palette','colors','brand_style','brand_logo','brand_background_override','preserve_template_background','background_info') if k in template['metadata']}},
@@ -49,7 +49,8 @@ def manifest(template, content, source, audit_counts, duration, jid, timings=Non
             'template': {'id': template['id'], 'name': template['name'],
                          'fingerprint': sha256(json.dumps(template['metadata'], sort_keys=True).encode()).hexdigest()},
             'source_sha256': sha256(source.encode()).hexdigest(), 'slides': len(content.slides),
-            'audit': audit_counts, 'duration_seconds': round(duration, 2), 'within_budget': duration <= BUDGET_SECONDS,
+            'audit': audit_counts, 'text_fit': text_fit or {'repaired_slides': [], 'overflow_slides': []},
+            'duration_seconds': round(duration, 2), 'within_budget': duration <= BUDGET_SECONDS,
             'timings':{**{k:round(v,4) for k,v in (timings or {}).items()},'total':round(duration,4)}}
 
 def generation_budget(function):

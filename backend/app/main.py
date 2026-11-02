@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import copy
+from collections import Counter
 from contextlib import asynccontextmanager
 from email.message import EmailMessage
 from pathlib import Path
@@ -478,15 +479,42 @@ async def assemble_variants(jid, content, template, source, user_id, timings, re
     tick=monotonic();db.job_set(jid,'running','audit',user_id=user_id)
     bindings=await asyncio.to_thread(lambda:[slide_binding(slide,source) if not slide.analytics else {'status':'matched'}
                                              for slide in content.slides])
-    checks=await asyncio.gather(*(asyncio.to_thread(audit_deck,content,template,v,source,scenes=scenes[v],bindings=bindings) for v in ('a','b','c')))
+    run_audit=lambda:asyncio.gather(*(asyncio.to_thread(audit_deck,content,template,v,source,scenes=scenes[v],bindings=bindings) for v in ('a','b','c')))
+    checks=await run_audit()
+    def replace(index, slide):
+        content.slides[index]=slide
+        for v in ('a','b','c'): scenes[v][index]=build_scene(slide,template['metadata'],v,index)
+    # Labels that do not fit a diagram or card grid move to the list layout, keeping every word;
+    # a slide stays visual when the list would not fit any better.
+    repaired=overflowing_visual_slides(content,checks)
+    if repaired:
+        before=overflow_by_slide(checks);original={index:content.slides[index] for index in repaired}
+        for index in repaired: replace(index,as_list_slide(original[index]))
+        checks=await run_audit();after=overflow_by_slide(checks)
+        reverted=[index for index in repaired if after[index]>=before[index]]
+        for index in reverted: replace(index,original[index])
+        repaired=[index for index in repaired if index not in reverted]
+        if reverted: checks=await run_audit()
     timings['audit']=monotonic()-tick
-    overflow_slides=sorted({issue.slide+1 for issues in checks for issue in issues
-                            if issue.code=='overflow' and content.slides[issue.slide].kind in {'diagram','icons'}})
-    if overflow_slides:
-        raise LLMError('Текст не помещается в блоки схем или карточек на слайдах '
-                       + ', '.join(map(str,overflow_slides))
-                       + '. Сократите подписи или разделите содержание на несколько слайдов и повторите.')
-    return {v:{'issues':len(issues),'errors':sum(i.severity=='error' for i in issues)} for v,issues in zip(('a','b','c'),checks)}
+    counts={v:{'issues':len(issues),'errors':sum(i.severity=='error' for i in issues)} for v,issues in zip(('a','b','c'),checks)}
+    # A deck that still has overflow is saved anyway: the audit shows the slides to shorten.
+    overflow=sorted({issue.slide+1 for issues in checks for issue in issues if issue.code=='overflow'})
+    return counts,{'repaired_slides':[index+1 for index in repaired],'overflow_slides':overflow}
+
+def overflow_by_slide(checks):
+    return Counter(issue.slide for issues in checks for issue in issues if issue.code=='overflow')
+
+def overflowing_visual_slides(content, checks):
+    return sorted({issue.slide for issues in checks for issue in issues
+                   if issue.code=='overflow' and content.slides[issue.slide].kind in {'diagram','icons'}})
+
+def as_list_slide(slide):
+    """Drop diagram geometry (nodes, connectors, per-object placement) that referred to the old layout."""
+    def plain(design):
+        return design.model_copy(update={'smartart':None,'diagram_style':None,'objects':{}}) if design else None
+    return slide.model_copy(update={'kind':'text','design':plain(slide.design),
+                                    'designs':{v:plain(d) for v,d in slide.designs.items()},
+                                    'icon_names':[],'resource_icon_ids':[],'resource_icon_data':[]})
 
 @generation_budget
 async def generate_job(jid: str, request: GenerateRequest,user_id: str, result_project_id: str | None = None):
@@ -506,10 +534,10 @@ async def generate_job(jid: str, request: GenerateRequest,user_id: str, result_p
             template=styled_template(template,source,user_id)
             content=await create_design_variants(source,template,resources=resources)
             timings['design']=monotonic()-tick
-            counts=await assemble_variants(jid,content,template,request.source_text,user_id,timings,resources)
+            counts,text_fit=await assemble_variants(jid,content,template,request.source_text,user_id,timings,resources)
             db.job_complete_with_project(jid,result_project_id,request.template_id,
                                          normalize_model_icons(content.model_dump(),'slides'),request.source_text,user_id,
-                                         manifest(template,content,request.source_text,counts,monotonic()-started,jid,timings))
+                                         manifest(template,content,request.source_text,counts,monotonic()-started,jid,timings,text_fit))
         except LLMError as exc:
             db.job_set(jid,'failed','failed',error=str(exc),user_id=user_id)
         except HTTPException as exc:
@@ -602,11 +630,11 @@ async def regenerate_job(jid: str, original: dict, instruction: str, user_id: st
             template=project_template(original)
             content=await create_design_variants(base,template,instruction,resources)
             timings['design']=monotonic()-tick
-            counts=await assemble_variants(jid,content,template,original['source_text'],user_id,timings,resources)
+            counts,text_fit=await assemble_variants(jid,content,template,original['source_text'],user_id,timings,resources)
             # Persist only a complete result, as a copy; never overwrite the user's working project.
             db.job_complete_with_project(jid,result_project_id,original['template_id'],
                                          content.model_dump(),original['source_text'],user_id,
-                                         manifest(template,content,original['source_text'],counts,monotonic()-started,jid,timings))
+                                         manifest(template,content,original['source_text'],counts,monotonic()-started,jid,timings,text_fit))
         except LLMError as exc:
             db.job_set(jid,'failed','failed',error=str(exc),user_id=user_id)
         except (TimeoutError, OperationCancelled): raise

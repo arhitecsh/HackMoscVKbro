@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse, FileResponse
 from .http_assets import FrontendStaticFiles as StaticFiles, JsonCompressionMiddleware, private_image_response
 from fastapi.exceptions import RequestValidationError
-from .config import settings, BASE, validate_settings
+from .config import settings, BASE, validate_settings, trusted_origins
 from . import database as db
 from .models import OutlineRequest, GenerateRequest, RegenerateRequest, ProjectUpdate, FixRequest, DeckContent, Issue, AssistantRequest
 from .services.assistant import edit_presentation
@@ -80,7 +80,7 @@ app=FastAPI(title='Deckly.Ai API',version='0.3.0',lifespan=lifespan,
             docs_url=None if settings.app_env=='production' else '/docs',
             redoc_url=None if settings.app_env=='production' else '/redoc',
             openapi_url=None if settings.app_env=='production' else '/openapi.json')
-app.add_middleware(CORSMiddleware,allow_origins=settings.origins,allow_credentials=True,
+app.add_middleware(CORSMiddleware,allow_origins=sorted(trusted_origins()),allow_credentials=True,
                    allow_methods=['GET','POST','PUT','DELETE'],allow_headers=['Content-Type','X-CSRF-Token','X-AI-Operation-ID'])
 app.add_middleware(JsonCompressionMiddleware)
 app.include_router(auth_router)
@@ -98,7 +98,7 @@ async def private_validation_error(request: Request, exc: RequestValidationError
 async def browser_security(request:Request,call_next):
     if request.method not in {'GET','HEAD','OPTIONS'}:
         origin=request.headers.get('origin')
-        if (origin and origin not in [settings.public_url,*settings.origins]) or request.headers.get('sec-fetch-site')=='cross-site':
+        if (origin and origin not in trusted_origins()) or request.headers.get('sec-fetch-site')=='cross-site':
             return JSONResponse({'detail':'Запрос с постороннего сайта отклонён'},status_code=403)
     response=await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'

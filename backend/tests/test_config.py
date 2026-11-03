@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from app.config import Settings, validate_settings
+from app.config import Settings, validate_settings, trusted_origins
 
 
 def production_settings(**overrides):
@@ -158,3 +158,14 @@ def test_secure_cookie_setting_applies_to_session_and_yandex_oauth(monkeypatch, 
         assert oauth.status_code == 302
         oauth_cookie = next(cookie for cookie in oauth.headers.get_list('set-cookie') if 'deckly_oauth=' in cookie)
         assert 'secure' in oauth_cookie.lower()
+
+
+def test_loopback_origin_is_trusted_under_every_local_name():
+    config = replace(Settings(), public_url='http://127.0.0.1:8000', origins=[])
+    assert {'http://127.0.0.1:8000', 'http://localhost:8000', 'http://[::1]:8000'} <= trusted_origins(config)
+    assert 'http://localhost:5173' not in trusted_origins(config)
+    assert 'http://evil.example:8000' not in trusted_origins(config)
+
+
+def test_public_origins_are_not_widened():
+    assert trusted_origins(production_settings()) == {'https://deckly.example', 'https://www.deckly.example'}

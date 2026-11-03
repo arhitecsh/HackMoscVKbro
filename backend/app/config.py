@@ -40,6 +40,25 @@ def _https_origin(value: str) -> str | None:
     except ValueError:
         return None
 
+LOOPBACK_NAMES = ('localhost', '127.0.0.1', '[::1]')
+
+def trusted_origins(config=None) -> set[str]:
+    """Origins allowed to send state-changing requests. A loopback address is the same
+    machine under any of its names, so localhost:8000 works when 127.0.0.1:8000 is configured."""
+    config = config or settings
+    result = set()
+    for value in (config.public_url, *config.origins):
+        value = value.rstrip('/')
+        result.add(value)
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError:
+            continue
+        if parsed.hostname in {'localhost', '127.0.0.1', '::1'}:
+            result.update(f'{parsed.scheme}://{name}' + (f':{port}' if port else '') for name in LOOPBACK_NAMES)
+    return result
+
 def _llm_base_url(value: str) -> str:
     """Accept the API root (…/v1) or the full chat endpoint; the client appends /chat/completions."""
     value = value.strip().rstrip('/')
